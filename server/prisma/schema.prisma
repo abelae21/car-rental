@@ -1,0 +1,354 @@
+// ============================================================================
+// Car Rental Platform — Prisma Schema
+// PostgreSQL (Neon-ready)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum VehicleCategory {
+  ECONOMY
+  COMPACT
+  SUV
+  LUXURY
+  VAN
+  TRUCK
+  SPORTS
+  ELECTRIC
+}
+
+enum TransmissionType {
+  AUTOMATIC
+  MANUAL
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  ELECTRIC
+  HYBRID
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  BOOKED
+  MAINTENANCE
+  INACTIVE
+  PENDING_APPROVAL
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  ONGOING
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentProvider {
+  STRIPE
+  PAYPAL
+  MANUAL
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED
+}
+
+enum NotificationType {
+  REGISTRATION
+  BOOKING_CONFIRMATION
+  BOOKING_CANCELLATION
+  PASSWORD_RESET
+  PAYMENT_CONFIRMATION
+  GENERAL
+}
+
+// ----------------------------------------------------------------------------
+// Users & Auth
+// ----------------------------------------------------------------------------
+
+model User {
+  id                    String    @id @default(uuid())
+  email                 String    @unique
+  password              String
+  firstName             String
+  lastName              String
+  phone                 String?
+  avatarUrl             String?
+  role                  Role      @default(CUSTOMER)
+
+  isEmailVerified        Boolean   @default(false)
+  emailVerificationToken String?  @unique
+  emailVerificationExpiry DateTime?
+
+  passwordResetToken     String?  @unique
+  passwordResetExpiry    DateTime?
+
+  refreshTokenHash       String?
+
+  isActive               Boolean  @default(true)
+
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  bookings               Booking[]
+  reviews                Review[]
+  favorites              Favorite[]
+  notifications          Notification[]
+  vehiclesOwned          Vehicle[]      @relation("VehicleOwner")
+
+  @@map("users")
+  @@index([email])
+}
+
+// ----------------------------------------------------------------------------
+// Vehicles
+// ----------------------------------------------------------------------------
+
+model Vehicle {
+  id                String            @id @default(uuid())
+  name              String
+  brand             String
+  model             String
+  year              Int
+  category          VehicleCategory
+  seats             Int
+  transmission      TransmissionType
+  fuelType          FuelType
+  mileage           Int               @default(0)
+  color             String
+  pricePerDay       Decimal           @db.Decimal(10, 2)
+  status            VehicleStatus     @default(PENDING_APPROVAL)
+  pickupLocation    String
+  latitude           Float?
+  longitude          Float?
+  description       String            @db.Text
+  features          String[]          @default([])
+  insuranceInfo     String?           @db.Text
+  isFeatured        Boolean           @default(false)
+
+  averageRating     Float             @default(0)
+  totalReviews      Int               @default(0)
+
+  ownerId           String?
+  owner             User?             @relation("VehicleOwner", fields: [ownerId], references: [id])
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  images            VehicleImage[]
+  bookings          Booking[]
+  reviews           Review[]
+  favorites         Favorite[]
+
+  @@map("vehicles")
+  @@index([brand, category])
+  @@index([status])
+  @@index([pricePerDay])
+}
+
+model VehicleImage {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  url        String
+  publicId   String   // Cloudinary public_id, for deletion
+  isPrimary  Boolean  @default(false)
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@map("vehicle_images")
+  @@index([vehicleId])
+}
+
+// ----------------------------------------------------------------------------
+// Bookings
+// ----------------------------------------------------------------------------
+
+model Booking {
+  id               String        @id @default(uuid())
+  bookingRef       String        @unique // human-readable reference, e.g. CR-2026-000123
+
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
+
+  vehicleId        String
+  vehicle          Vehicle       @relation(fields: [vehicleId], references: [id])
+
+  pickupDate       DateTime
+  returnDate       DateTime
+  pickupLocation   String
+  returnLocation   String
+
+  totalDays        Int
+  pricePerDay      Decimal       @db.Decimal(10, 2)
+  subtotal         Decimal       @db.Decimal(10, 2)
+  discountAmount   Decimal       @db.Decimal(10, 2) @default(0)
+  totalAmount      Decimal       @db.Decimal(10, 2)
+
+  couponId         String?
+  coupon           Coupon?       @relation(fields: [couponId], references: [id])
+
+  status           BookingStatus @default(PENDING)
+  cancellationReason String?
+  cancelledAt      DateTime?
+
+  rentalAgreementUrl String?
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  payment          Payment?
+  review           Review?
+
+  @@map("bookings")
+  @@index([userId])
+  @@index([vehicleId])
+  @@index([status])
+  @@index([pickupDate, returnDate])
+}
+
+// ----------------------------------------------------------------------------
+// Payments
+// ----------------------------------------------------------------------------
+
+model Payment {
+  id              String          @id @default(uuid())
+  bookingId       String          @unique
+  booking         Booking         @relation(fields: [bookingId], references: [id])
+
+  amount          Decimal         @db.Decimal(10, 2)
+  currency        String          @default("USD")
+  provider        PaymentProvider @default(MANUAL)
+  providerRef     String?         // external transaction id from Stripe/PayPal
+  status          PaymentStatus   @default(PENDING)
+
+  invoiceNumber   String          @unique
+  invoiceUrl      String?
+
+  refundAmount    Decimal?        @db.Decimal(10, 2)
+  refundedAt      DateTime?
+
+  paidAt          DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("payments")
+  @@index([status])
+  @@index([bookingId])
+}
+
+// ----------------------------------------------------------------------------
+// Reviews
+// ----------------------------------------------------------------------------
+
+model Review {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  vehicleId   String
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  bookingId   String   @unique
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+
+  rating      Int      // 1-5
+  comment     String   @db.Text
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("reviews")
+  @@unique([userId, vehicleId, bookingId])
+  @@index([vehicleId])
+}
+
+// ----------------------------------------------------------------------------
+// Favorites
+// ----------------------------------------------------------------------------
+
+model Favorite {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("favorites")
+  @@unique([userId, vehicleId])
+}
+
+// ----------------------------------------------------------------------------
+// Notifications
+// ----------------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+
+  type      NotificationType
+  title     String
+  message   String           @db.Text
+  isRead    Boolean          @default(false)
+
+  createdAt DateTime         @default(now())
+
+  @@map("notifications")
+  @@index([userId, isRead])
+}
+
+// ----------------------------------------------------------------------------
+// Coupons
+// ----------------------------------------------------------------------------
+
+model Coupon {
+  id             String     @id @default(uuid())
+  code           String     @unique
+  type           CouponType
+  value          Decimal    @db.Decimal(10, 2) // percentage (0-100) or fixed amount
+  maxUses        Int?
+  usedCount      Int        @default(0)
+  minBookingDays Int?
+  validFrom      DateTime
+  validUntil     DateTime
+  isActive       Boolean    @default(true)
+
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  bookings       Booking[]
+
+  @@map("coupons")
+  @@index([code])
+}
